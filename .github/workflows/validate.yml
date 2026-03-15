@@ -1,0 +1,38 @@
+name: Validate Docker Compose
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy .env.example to .env
+        run: cp .env.example .env
+
+      - name: Validate docker-compose.yml syntax
+        run: docker compose --profile runaradio --profile estacionkusfm --profile radioaventuramx config --quiet
+
+      - name: Validate docker-compose.yml can resolve all services
+        run: docker compose --profile runaradio --profile estacionkusfm --profile radioaventuramx config --services
+
+      - name: Check config templates exist
+        run: |
+          test -f stations/runaradio/config.yml.tmpl
+          test -f stations/estacionkusfm/config.yml.tmpl
+          test -f stations/radioaventuramx/config.yml.tmpl
+
+      - name: Validate setup.sh syntax
+        run: bash -n setup.sh
+
+      - name: Validate utility scripts syntax
+        run: |
+          bash -n scripts/migrate-all.sh
+          bash -n scripts/backup.sh
+          bash -n scripts/status.sh
