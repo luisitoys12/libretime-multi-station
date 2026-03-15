@@ -1,0 +1,29 @@
+# Environment files with secrets
+.env
+
+# Generated station configs (contain passwords)
+stations/*/config.yml
+
+# Docker volumes
+volumes/
+
+# Database data
+postgres_data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Backup files
+backups/
+*.sql.gz
