@@ -1,0 +1,581 @@
+# =============================================================================
+# LibreTime Multi-Station - EstacionKusMedios Digital
+# =============================================================================
+# 3 estaciones: Runaradio, EstacionKusFM, RadioAventuraMX
+#
+# Uso:
+#   Todas las estaciones:  docker compose up -d
+#   Solo una estación:     docker compose --profile runaradio up -d
+#   Dos estaciones:        docker compose --profile runaradio --profile estacionkusfm up -d
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # PROXY REVERSO PRINCIPAL
+  # ===========================================================================
+  proxy:
+    image: nginx:1.25-alpine
+    profiles: ["runaradio", "estacionkusfm", "radioaventuramx"]
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - proxy_net
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ESTACIÓN 1: RUNARADIO
+  # ===========================================================================
+  runaradio-postgres:
+    image: postgres:15
+    profiles: ["runaradio"]
+    volumes:
+      - runaradio_postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: libretime
+      POSTGRES_PASSWORD: ${RUNARADIO_POSTGRES_PASSWORD}
+    networks:
+      - runaradio_net
+    healthcheck:
+      test: pg_isready -U libretime
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  runaradio-rabbitmq:
+    image: rabbitmq:3.13-alpine
+    profiles: ["runaradio"]
+    environment:
+      RABBITMQ_DEFAULT_VHOST: /libretime
+      RABBITMQ_DEFAULT_USER: libretime
+      RABBITMQ_DEFAULT_PASS: ${RUNARADIO_RABBITMQ_PASS}
+    networks:
+      - runaradio_net
+    healthcheck:
+      test: nc -z 127.0.0.1 5672
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  runaradio-playout:
+    image: ghcr.io/libretime/libretime-playout:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      runaradio-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/runaradio/config.yml:/etc/libretime/config.yml:ro
+      - runaradio_playout:/app
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://runaradio-nginx:8080
+    networks:
+      - runaradio_net
+    restart: unless-stopped
+
+  runaradio-liquidsoap:
+    image: ghcr.io/libretime/libretime-playout:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    command: /usr/local/bin/libretime-liquidsoap
+    init: true
+    ulimits:
+      nofile: 1024
+    ports:
+      - "8101:8001"
+      - "8102:8002"
+    depends_on:
+      runaradio-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/runaradio/config.yml:/etc/libretime/config.yml:ro
+      - runaradio_playout:/app
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://runaradio-nginx:8080
+    networks:
+      - runaradio_net
+    restart: unless-stopped
+
+  runaradio-analyzer:
+    image: ghcr.io/libretime/libretime-analyzer:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      runaradio-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/runaradio/config.yml:/etc/libretime/config.yml:ro
+      - runaradio_storage:/srv/libretime
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://runaradio-nginx:8080
+    networks:
+      - runaradio_net
+    restart: unless-stopped
+
+  runaradio-worker:
+    image: ghcr.io/libretime/libretime-worker:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      runaradio-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/runaradio/config.yml:/etc/libretime/config.yml:ro
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://runaradio-nginx:8080
+    networks:
+      - runaradio_net
+    restart: unless-stopped
+
+  runaradio-api:
+    image: ghcr.io/libretime/libretime-api:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      runaradio-postgres:
+        condition: service_healthy
+      runaradio-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/runaradio/config.yml:/etc/libretime/config.yml:ro
+      - runaradio_storage:/srv/libretime
+    networks:
+      - runaradio_net
+    restart: unless-stopped
+
+  runaradio-legacy:
+    image: ghcr.io/libretime/libretime-legacy:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      runaradio-postgres:
+        condition: service_healthy
+      runaradio-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/runaradio/config.yml:/etc/libretime/config.yml:ro
+      - runaradio_storage:/srv/libretime
+    networks:
+      - runaradio_net
+    restart: unless-stopped
+
+  runaradio-nginx:
+    image: ghcr.io/libretime/libretime-nginx:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["runaradio"]
+    ports:
+      - "8081:8080"
+    depends_on:
+      - runaradio-legacy
+    volumes:
+      - runaradio_storage:/srv/libretime:ro
+    networks:
+      - runaradio_net
+      - proxy_net
+    restart: unless-stopped
+
+  runaradio-icecast:
+    image: ghcr.io/libretime/icecast:2.4.4
+    profiles: ["runaradio"]
+    ports:
+      - "8010:8000"
+    environment:
+      ICECAST_SOURCE_PASSWORD: ${RUNARADIO_ICECAST_SOURCE_PASSWORD}
+      ICECAST_ADMIN_PASSWORD: ${RUNARADIO_ICECAST_ADMIN_PASSWORD}
+      ICECAST_RELAY_PASSWORD: ${RUNARADIO_ICECAST_RELAY_PASSWORD}
+    networks:
+      - runaradio_net
+      - proxy_net
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ESTACIÓN 2: ESTACIONKUSFM
+  # ===========================================================================
+  estacionkusfm-postgres:
+    image: postgres:15
+    profiles: ["estacionkusfm"]
+    volumes:
+      - estacionkusfm_postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: libretime
+      POSTGRES_PASSWORD: ${ESTACIONKUSFM_POSTGRES_PASSWORD}
+    networks:
+      - estacionkusfm_net
+    healthcheck:
+      test: pg_isready -U libretime
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  estacionkusfm-rabbitmq:
+    image: rabbitmq:3.13-alpine
+    profiles: ["estacionkusfm"]
+    environment:
+      RABBITMQ_DEFAULT_VHOST: /libretime
+      RABBITMQ_DEFAULT_USER: libretime
+      RABBITMQ_DEFAULT_PASS: ${ESTACIONKUSFM_RABBITMQ_PASS}
+    networks:
+      - estacionkusfm_net
+    healthcheck:
+      test: nc -z 127.0.0.1 5672
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  estacionkusfm-playout:
+    image: ghcr.io/libretime/libretime-playout:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      estacionkusfm-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/estacionkusfm/config.yml:/etc/libretime/config.yml:ro
+      - estacionkusfm_playout:/app
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://estacionkusfm-nginx:8080
+    networks:
+      - estacionkusfm_net
+    restart: unless-stopped
+
+  estacionkusfm-liquidsoap:
+    image: ghcr.io/libretime/libretime-playout:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    command: /usr/local/bin/libretime-liquidsoap
+    init: true
+    ulimits:
+      nofile: 1024
+    ports:
+      - "8201:8001"
+      - "8202:8002"
+    depends_on:
+      estacionkusfm-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/estacionkusfm/config.yml:/etc/libretime/config.yml:ro
+      - estacionkusfm_playout:/app
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://estacionkusfm-nginx:8080
+    networks:
+      - estacionkusfm_net
+    restart: unless-stopped
+
+  estacionkusfm-analyzer:
+    image: ghcr.io/libretime/libretime-analyzer:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      estacionkusfm-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/estacionkusfm/config.yml:/etc/libretime/config.yml:ro
+      - estacionkusfm_storage:/srv/libretime
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://estacionkusfm-nginx:8080
+    networks:
+      - estacionkusfm_net
+    restart: unless-stopped
+
+  estacionkusfm-worker:
+    image: ghcr.io/libretime/libretime-worker:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      estacionkusfm-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/estacionkusfm/config.yml:/etc/libretime/config.yml:ro
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://estacionkusfm-nginx:8080
+    networks:
+      - estacionkusfm_net
+    restart: unless-stopped
+
+  estacionkusfm-api:
+    image: ghcr.io/libretime/libretime-api:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      estacionkusfm-postgres:
+        condition: service_healthy
+      estacionkusfm-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/estacionkusfm/config.yml:/etc/libretime/config.yml:ro
+      - estacionkusfm_storage:/srv/libretime
+    networks:
+      - estacionkusfm_net
+    restart: unless-stopped
+
+  estacionkusfm-legacy:
+    image: ghcr.io/libretime/libretime-legacy:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      estacionkusfm-postgres:
+        condition: service_healthy
+      estacionkusfm-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/estacionkusfm/config.yml:/etc/libretime/config.yml:ro
+      - estacionkusfm_storage:/srv/libretime
+    networks:
+      - estacionkusfm_net
+    restart: unless-stopped
+
+  estacionkusfm-nginx:
+    image: ghcr.io/libretime/libretime-nginx:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["estacionkusfm"]
+    ports:
+      - "8082:8080"
+    depends_on:
+      - estacionkusfm-legacy
+    volumes:
+      - estacionkusfm_storage:/srv/libretime:ro
+    networks:
+      - estacionkusfm_net
+      - proxy_net
+    restart: unless-stopped
+
+  estacionkusfm-icecast:
+    image: ghcr.io/libretime/icecast:2.4.4
+    profiles: ["estacionkusfm"]
+    ports:
+      - "8020:8000"
+    environment:
+      ICECAST_SOURCE_PASSWORD: ${ESTACIONKUSFM_ICECAST_SOURCE_PASSWORD}
+      ICECAST_ADMIN_PASSWORD: ${ESTACIONKUSFM_ICECAST_ADMIN_PASSWORD}
+      ICECAST_RELAY_PASSWORD: ${ESTACIONKUSFM_ICECAST_RELAY_PASSWORD}
+    networks:
+      - estacionkusfm_net
+      - proxy_net
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ESTACIÓN 3: RADIOAVENTURAMX
+  # ===========================================================================
+  radioaventuramx-postgres:
+    image: postgres:15
+    profiles: ["radioaventuramx"]
+    volumes:
+      - radioaventuramx_postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: libretime
+      POSTGRES_PASSWORD: ${RADIOAVENTURAMX_POSTGRES_PASSWORD}
+    networks:
+      - radioaventuramx_net
+    healthcheck:
+      test: pg_isready -U libretime
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  radioaventuramx-rabbitmq:
+    image: rabbitmq:3.13-alpine
+    profiles: ["radioaventuramx"]
+    environment:
+      RABBITMQ_DEFAULT_VHOST: /libretime
+      RABBITMQ_DEFAULT_USER: libretime
+      RABBITMQ_DEFAULT_PASS: ${RADIOAVENTURAMX_RABBITMQ_PASS}
+    networks:
+      - radioaventuramx_net
+    healthcheck:
+      test: nc -z 127.0.0.1 5672
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  radioaventuramx-playout:
+    image: ghcr.io/libretime/libretime-playout:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      radioaventuramx-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/radioaventuramx/config.yml:/etc/libretime/config.yml:ro
+      - radioaventuramx_playout:/app
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://radioaventuramx-nginx:8080
+    networks:
+      - radioaventuramx_net
+    restart: unless-stopped
+
+  radioaventuramx-liquidsoap:
+    image: ghcr.io/libretime/libretime-playout:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    command: /usr/local/bin/libretime-liquidsoap
+    init: true
+    ulimits:
+      nofile: 1024
+    ports:
+      - "8301:8001"
+      - "8302:8002"
+    depends_on:
+      radioaventuramx-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/radioaventuramx/config.yml:/etc/libretime/config.yml:ro
+      - radioaventuramx_playout:/app
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://radioaventuramx-nginx:8080
+    networks:
+      - radioaventuramx_net
+    restart: unless-stopped
+
+  radioaventuramx-analyzer:
+    image: ghcr.io/libretime/libretime-analyzer:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      radioaventuramx-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/radioaventuramx/config.yml:/etc/libretime/config.yml:ro
+      - radioaventuramx_storage:/srv/libretime
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://radioaventuramx-nginx:8080
+    networks:
+      - radioaventuramx_net
+    restart: unless-stopped
+
+  radioaventuramx-worker:
+    image: ghcr.io/libretime/libretime-worker:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      radioaventuramx-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/radioaventuramx/config.yml:/etc/libretime/config.yml:ro
+    environment:
+      LIBRETIME_GENERAL_PUBLIC_URL: http://radioaventuramx-nginx:8080
+    networks:
+      - radioaventuramx_net
+    restart: unless-stopped
+
+  radioaventuramx-api:
+    image: ghcr.io/libretime/libretime-api:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      radioaventuramx-postgres:
+        condition: service_healthy
+      radioaventuramx-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/radioaventuramx/config.yml:/etc/libretime/config.yml:ro
+      - radioaventuramx_storage:/srv/libretime
+    networks:
+      - radioaventuramx_net
+    restart: unless-stopped
+
+  radioaventuramx-legacy:
+    image: ghcr.io/libretime/libretime-legacy:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    init: true
+    ulimits:
+      nofile: 1024
+    depends_on:
+      radioaventuramx-postgres:
+        condition: service_healthy
+      radioaventuramx-rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./stations/radioaventuramx/config.yml:/etc/libretime/config.yml:ro
+      - radioaventuramx_storage:/srv/libretime
+    networks:
+      - radioaventuramx_net
+    restart: unless-stopped
+
+  radioaventuramx-nginx:
+    image: ghcr.io/libretime/libretime-nginx:${LIBRETIME_VERSION:-4.5.0}
+    profiles: ["radioaventuramx"]
+    ports:
+      - "8083:8080"
+    depends_on:
+      - radioaventuramx-legacy
+    volumes:
+      - radioaventuramx_storage:/srv/libretime:ro
+    networks:
+      - radioaventuramx_net
+      - proxy_net
+    restart: unless-stopped
+
+  radioaventuramx-icecast:
+    image: ghcr.io/libretime/icecast:2.4.4
+    profiles: ["radioaventuramx"]
+    ports:
+      - "8030:8000"
+    environment:
+      ICECAST_SOURCE_PASSWORD: ${RADIOAVENTURAMX_ICECAST_SOURCE_PASSWORD}
+      ICECAST_ADMIN_PASSWORD: ${RADIOAVENTURAMX_ICECAST_ADMIN_PASSWORD}
+      ICECAST_RELAY_PASSWORD: ${RADIOAVENTURAMX_ICECAST_RELAY_PASSWORD}
+    networks:
+      - radioaventuramx_net
+      - proxy_net
+    restart: unless-stopped
+
+# =============================================================================
+# VOLÚMENES
+# =============================================================================
+volumes:
+  # Runaradio
+  runaradio_postgres_data: {}
+  runaradio_storage: {}
+  runaradio_playout: {}
+  # EstacionKusFM
+  estacionkusfm_postgres_data: {}
+  estacionkusfm_storage: {}
+  estacionkusfm_playout: {}
+  # RadioAventuraMX
+  radioaventuramx_postgres_data: {}
+  radioaventuramx_storage: {}
+  radioaventuramx_playout: {}
+
+# =============================================================================
+# REDES
+# =============================================================================
+networks:
+  proxy_net:
+    driver: bridge
+  runaradio_net:
+    driver: bridge
+  estacionkusfm_net:
+    driver: bridge
+  radioaventuramx_net:
+    driver: bridge
